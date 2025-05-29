@@ -6,25 +6,315 @@ draft: false
 summary: 'The first blog of my GSoC 2025 journey with Waycrate'
 ---
 
-# Nested Routes
+# Introduction
 
-The blog template supports posts in nested sub-folders. This helps in organisation and can be used to group posts of similar content e.g. a multi-part series. This post is itself an example of a nested route! It's located in the `/data/blog/nested-route` folder.
+Welcome to this blog series on my Google Summer of Code 2025 Project: **swhkd: Provide
+Libinput as an Alternative Input Backend**.
+| Period | From | To |
+|--------|------|----|
+| Community Bonding Period  | May 8 | May 31 |
+| Implementation till Midterm Review | June 1 | July 14 |
+| Implementation till Final Review | July 15 | September 1 |
 
-## How
+The project will officially begin on June 1st and will end on September 1st. The midterm
+evaluation is scheduled to be on July 15th, and the final evaluation is scheduled for
+September 1st.  
+For a more detailed timeline and overview of the project, check out the
+proposal [here](https://docs.google.com/document/d/1v5R0VWxwPxz11hho753VfebKN5VCLLPzO0TisAqDy-I/edit?usp=sharing).
 
-Simplify create multiple folders inside the main `/data/blog` folder and add your `.md`/`.mdx` files to them. You can even create something like `/data/blog/nested-route/deeply-nested-route/my-post.md`
+## What is swhkd?
+Short for Simple Wayland HotKey Daemon. We'll borrow the answer from the [website](https://git.sr.ht/~shinyzenith/swhkd#swhkd)
 
-We use Next.js catch all routes to handle the routing and path creations.
+> swhkd is a display protocol-independent hotkey daemon made in Rust. swhkd uses an easy-to-use configuration system inspired by sxhkd, so you can easily add or remove hotkeys.
+> It also attempts to be a drop-in replacement for sxhkd, meaning your sxhkd config file is also compatible with swhkd.
+> Because swhkd can be used anywhere, the same swhkd config can be used across Xorg or Wayland desktops, and you can even use swhkd in a TTY.
 
-## Use Cases
+## What is libinput?
+> libinput is a library that provides a full input stack for display servers and other applications that need to handle input devices provided by the kernel.
+> libinput provides device detection, event handling and abstraction so minimize the amount of custom input code the user of libinput need to provide the common set of functionality that users expect. Input event processing includes scaling touch coordinates, generating relative pointer events from touchpads, pointer acceleration, etc.
 
-Here are some reasons to use nested routes
+# Goals
+The goal of this project is to provide an option for the user to use libinput as the input backend,
+as an alternative to the default _evdev_ input backend. The motivation for this is explained in the
+proposal. In the first phase of this project, or goals are:
 
-- More logical content organisation (blogs will still be displayed based on the created date)
-- Multi-part posts
-- Different sub-routes for each author
-- Internationalization (though it would be recommended to use [Next.js built-in i8n routing](https://nextjs.org/docs/advanced-features/i18n-routing))
+### Read device events using libinput
+We will start from scratch and try to replicate some existing functionality of swhkd using
+the libinput backend. At this stage, we will not plan changes in any of the existing modules
+in swhkd (config, perms, tests, uinput) but rather work out the specifics of the library
+and implement the major functionality of swhkd:
+1. Adding devices by name.
+2. Grab the devices and read their inputs.
 
-## Note
+### Read events asynchronously
+The current implementation uses an asynchronous API to reduce CPU usage, we use the
+[_AsyncFd_](https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html) struct in 
+_tokio_, which provides a wrapper around the libinput Rust interface to let us perform
+asynchronous reads and writes.
 
-- The previous/next post links at bottom of the template are currently sorted by date. One could explore modifying the template to refer the reader to the previous/next post in the series, rather than by date.
+# Implementation
+
+## Simple Libinput Reader
+Here is a simple example using libinput to read and log events.
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+use input::{Libinput, LibinputInterface};
+use std::fs::{File, OpenOptions};
+use std::os::unix::{fs::OpenOptionsExt, io::OwnedFd};
+use std::path::Path;
+
+extern crate libc;
+use libc::{O_RDONLY, O_RDWR, O_WRONLY};
+
+struct Interface;
+
+impl LibinputInterface for Interface {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
+        OpenOptions::new()
+            .custom_flags(flags)
+            .read((flags & O_RDONLY != 0) | (flags & O_RDWR != 0))
+            .write((flags & O_WRONLY != 0) | (flags & O_RDWR != 0))
+            .open(path)
+            .map(|file| file.into())
+            .map_err(|err| err.raw_os_error().unwrap())
+    }
+    fn close_restricted(&mut self, fd: OwnedFd) {
+        unsafe {
+            File::from(fd);
+        }
+    }
+}
+
+fn main() {
+    let mut input = Libinput::new_with_udev(Interface);
+    input.udev_assign_seat("seat0").unwrap();
+    loop {
+        input.dispatch().unwrap();
+        for event in &mut input {
+            println!("Got event: {:?}", event);
+        }
+    }
+}
+```
+</details>
+
+We first define a struct _Interface_ which implements the trait _LibinputInterface_ 
+(required by libinput) for opening/closing device files with proper permissions.  
+We use this newly created struct while initializing libinput with udev. The udev backend
+auto-detects input devices tied to "seat0" (the default user session seat on Linux).
+The event loop then continuously listens for input events and prints them.
+
+To make a hotkey daemon from this, there are a lot of decisions to be made, let's go through
+some of them.
+
+## Libinput Context
+In the above example we use libinput with udev, which adds/removes devices automatically when
+the binary is run, or when the device is connected/disconnected. This is handled bu udev internally.
+```rust
+let mut input = Libinput::new_with_udev(Interface);
+input.udev_assign_seat("seat0").unwrap();
+```
+We could instead create a libinput context which requires the caller to manually add or remove devices
+by providing their path.
+```rust
+let mut input = Libinput::new_from_path(Interface);
+let dev = input.path_add_device("/dev/input/event20").unwrap();
+// use device
+input.path_remove_device(device);
+```
+
+The latter fits in better with the structure of the current _swhkd_ and would allow us to integrate
+it better in the future, but that involves writing a bunch of extra code with the _udev_ library to 
+manually do what libinput is already doing internally. So let's leave that problem to 
+_post midterm-review_ me. :)
+
+## _Grab_ that device!
+While writing a hotkey daemon, we want to grab _all_ events coming from a device for ourselves,
+and check whether the sequence of keys entered constitutes a hotkey. If it does, we execute the
+associated operation. If it doesn't we allow the events to pass through to be handled by the window
+manager/application.  
+Linux lets us do this using the _ioctl_ operation _EVIOCGRAB_, which is defined for _evdev_ devices.
+This lets the caller read events exclusively from this device. So we set the bit while opening
+the device, and unset it while closing it.
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+use nix::ioctl_write_int;
+ioctl_write_int!(eviocgrab, b'E', 0x90);
+
+fn grab(fd: i32) -> std::io::Result<()> {
+    unsafe {
+        eviocgrab(fd, 1)?;
+    }
+    Ok(())
+}
+
+fn ungrab(fd: i32) -> std::io::Result<()> {
+    unsafe {
+        eviocgrab(fd, 0)?;
+    }
+    Ok(())
+}
+
+impl LibinputInterface for Interface {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
+            // unchanged till here
+            .map(|file| {
+                grab(file.as_raw_fd()).expect("Could not grab fd");
+                file.into()
+            })
+    }
+
+    fn close_restricted(&mut self, fd: std::os::unix::io::OwnedFd) {
+        ungrab(fd.as_raw_fd()).expect("Could not ungrab fd");
+        drop(File::from(fd));
+    }
+}
+```
+</details>
+
+## Do NOT grab that device!
+But wait! If we grab all input devices for ourselves and then just print the events out, how
+do we then use our machine? *Spoiler:* we can't. In the initial phases of implementation, there
+were many instances where I had to restart the machine because I couldn't _Ctrl+C_ the executable.
+This would've been fine if we had implemented event passthrough; but as that's a task for future me,
+let's find a way to get around this for the time being.  
+Swhkd takes a devices argument from the user; we implement this _temporarily_ by reading the device
+names from devices.txt, which contains a list of newline separated device names.  
+How do we find the device name from the path? A rather simple way is to:
+1. Take the path of the device, e.g: _/dev/input/event20_.
+2. Read the contents of the corresponding path: _/sys/class/input/event20/device/name_
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+fn name_from_path(path: &Path) -> std::io::Result<String> {
+    // ...
+}
+
+fn get_devices_from_file(path: &Path) -> std::io::Result<HashSet<String>> {
+    // ...
+}
+
+struct Interface {
+    devices: HashSet<String>,
+}
+
+impl Interface {
+    pub fn new(path: &Path) -> std::io::Result<Self> {
+        Ok(Self { devices: get_devices_from_file(path)? })
+    }
+}
+
+impl LibinputInterface for Interface {
+    fn open_restricted(&mut self, path: &std::path::Path, flags: i32,) -> Result<OwnedFd, i32> {
+        let name = match name_from_path(path).unwrap();
+        if !self.devices.contains(&name) {
+            Err(-414)
+        } else {
+            OpenOptions::new()
+            // ...
+        }
+    }
+}
+
+
+fn main() -> std::io::Result<()> {
+    let interface = Interface::new(Path::new("./devices.txt"))?;
+    let mut input = Libinput::new_with_udev(interface);
+    // ...
+}
+```
+</details>
+
+## To poll, or not to poll
+Our current, rather simple implementation uses a loop to keep polling libinput and log events.
+It runs as fast as the CPU allows; pulling up `htop` will show that it takes over a CPU
+core and stays at a 100% usage, especially when the machine is idle. This is not ideal for a hotkey
+daemon that should be running in the background. Ideally, we would sit in idle and wait till an event
+is queued up, only then would be process the event, running for a few milliseconds per event.  
+To achieve this, we open the files in non-blocking mode. This is done by setting the `O_NONBLOCK`
+flag during the `open()` syscall. In this mode, if we attempt to read from a file and it's not ready,
+instead of blocking until data becomes available, the call return immediately with a `EWOULDBLOCK`.
+error.  
+This feature of the kernel is very handy, for the uninitiated, check out these
+[wonderful notes](https://notes.shichao.io/unp/ch6/) to learn more about how this is used in practice.  
+
+Libinput opens devices in non-blocking mode by default, allowing us to take advantage of it. We 
+pair it with Tokio's [_AsyncFd_](https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html), 
+which is easy since the Libinput struct already implements the trait that `AsyncFD` requires 
+(`std::os::fd::AsRawFd`).
+
+> AsyncFD associates an IO object backed by a Unix file descriptor with the tokio reactor, allowing 
+> for readiness to be polled. The file descriptor must be of a type that can be used with the OS 
+> polling facilities (ie, poll, epoll, kqueue, etc), such as a network socket or pipe, and the
+> file descriptor must have the nonblocking mode set to true.
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+use tokio::io::unix::AsyncFd;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let interface = Interface::new(Path::new("./devices.txt"))?;
+    let mut input = Libinput::new_with_udev(interface);
+    input.udev_assign_seat("seat0").unwrap();
+
+    let mut input: AsyncFD<Libinput> = AsyncFd::new(input)?;
+
+    loop {
+        let mut guard = input.readable_mut().await?;
+        // Tries running the inner function, if the inner function returns a 
+        // WouldBlock error, we continue
+        match guard.try_io(|inner| {
+            let input = inner.get_mut();
+            input.dispatch()?;
+            for event in input {
+                log::info!("Event: {:?}", event);
+            }
+            Ok(())
+        }) {
+            Ok(x) => {
+                x?;
+            }
+            Err(_would_block) => {}
+        };
+        // NOTE: very important, without this the fd is always ready to read from.
+        guard.clear_ready();
+    }
+}
+```
+</details>
+
+This is a lot to to take in, but go through the lines one by one and read the comments to understand
+how it all fits together. We first wait for the file descriptor to become readable, and acquire a guard.
+```rust
+let mut guard = input.readable_mut().await?;
+```
+Next, we we attempt to run the  inner closure. Since we're now using non-blocking reads, `input.dispatch()`
+returns a `WouldBlock` error instead of blocking there are no available events.
+
+The reason behind the last line in this snippet is explained very well here:
+> Tokio internally tracks when it has received a ready notification, and when readiness checking
+> functions like readable and writable are called, if the readiness flag is set, these async functions
+> will complete immediately. This however does mean that it is critical to ensure that this ready
+> flag is cleared when (and only when) the file descriptor ceases to be ready.
+
+```rust
+match guard.try_io(|inner| {
+    let input = inner.get_mut();
+    input.dispatch()?;
+    // ...
+    Ok(())
+}) {
+    Ok(x) => { x?; }
+    Err(_would_block) => {}
+};
+
+guard.clear_ready();
+```
+Go check out the repo to see how everything comes together: [link](https://github.com/aadilshabier/swhkd/tree/8ff5cb6e871f511e3db5f5d03e2a719815be8348).  
+I hope everyone who managed to make it till here learned something new. :)
