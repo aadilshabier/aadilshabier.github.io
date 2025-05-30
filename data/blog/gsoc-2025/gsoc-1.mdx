@@ -17,17 +17,20 @@ Libinput as an Alternative Input Backend**.
 | Implementation - Midterm | June 1 | July 14 |
 | Implementation - Final | July 15 | September 1 |
 
-For a more detailed timeline and overview of the project, check out the
-proposal [here](https://docs.google.com/document/d/1v5R0VWxwPxz11hho753VfebKN5VCLLPzO0TisAqDy-I/edit?usp=sharing).
+For a more detailed timeline and overview of the project, check out the proposal[^proposal].
+
+[^proposal]: Proposal: https://docs.google.com/document/d/1v5R0VWxwPxz11hho753VfebKN5VCLLPzO0TisAqDy-I/edit?usp=sharing
 
 ## What is swhkd?
-Short for Simple Wayland HotKey Daemon. I'll borrow the answer from the [website](https://git.sr.ht/~shinyzenith/swhkd#swhkd)
+Short for Simple Wayland HotKey Daemon[^swhkd]. I'll borrow the answer from their own description.
 
 > swhkd is a display protocol-independent hotkey daemon made in Rust. swhkd uses an easy-to-use configuration
 > system inspired by sxhkd, so you can easily add or remove hotkeys.  
 > It also attempts to be a drop-in replacement for sxhkd, meaning your sxhkd config file is also compatible with
 > swhkd. Because swhkd can be used anywhere, the same swhkd config can be used across Xorg or Wayland desktops,
 > and you can even use swhkd in a TTY.
+
+[^swhkd]: swhkd: https://git.sr.ht/~shinyzenith/swhkd#swhkd
 
 ## What is libinput?
 > libinput is a library that provides a full input stack for display servers and other applications that need
@@ -39,7 +42,7 @@ Short for Simple Wayland HotKey Daemon. I'll borrow the answer from the [website
 # Goals
 The goal of this project is to provide support for the user to use `libinput` as the input backend,
 as an alternative to the default `evdev` input backend. The motivation for this is outlined in the
-proposal. In the first phase of this project, our goals are:
+proposal[^proposal]. In the first phase of this project, our goals are:
 
 ### Read device events using libinput
 We'll start from scratch and try to replicate some existing functionality of swhkd using
@@ -51,10 +54,10 @@ library works and implementing the core functionality of swhkd:
 
 ### Read events asynchronously
 The current implementation uses an asynchronous API to reduce CPU usage, we use the
-`AsyncFd`[^1] struct from `tokio`, which provides a wrapper around file descriptors to
+`AsyncFd`[^asyncfd] struct from `tokio`, which provides a wrapper around file descriptors to
 facilitate asynchronous reads and writes.
 
-[^1]: AsyncFD: https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html
+[^asyncfd]: AsyncFD: https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html
 
 # Implementation
 
@@ -244,13 +247,13 @@ flag during the `open()` syscall. In this mode, if we attempt to read from a fil
 instead of blocking until data becomes available, the call return immediately with a `EWOULDBLOCK`
 error.  
 This feature of the kernel is very handy, for the uninitiated, check out the man pages for `select`,
-`poll` and `epoll`. There are also several blogs and resources[^2] on the internet to learn more
+`poll` and `epoll`. There are also several blogs and resources[^notes] on the internet to learn more
 about how this is used in practice.  
 
-[^2]: Chapter 6. I/O Multiplexing: The select and poll Functions: https://notes.shichao.io/unp/ch6/
+[^notes]: Chapter 6. I/O Multiplexing: The select and poll Functions: https://notes.shichao.io/unp/ch6/
 
 Libinput opens devices in non-blocking mode by default, allowing us to take advantage of it. We 
-pair it with Tokio's AsyncFd[^1], 
+pair it with Tokio's AsyncFd[^asyncfd], 
 which is easy since the Libinput struct already implements the trait that `AsyncFD` requires 
 (`std::os::fd::AsRawFd`).
 
