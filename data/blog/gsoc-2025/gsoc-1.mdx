@@ -1,6 +1,7 @@
 ---
 title: Google Summer of Code Blog 1
 date: '2025-05-29'
+lastmod: '2025-05-30'
 tags: ['gsoc', 'rust', 'waycrate']
 draft: false
 summary: 'The first blog of my GSoC 2025 journey with Waycrate'
@@ -12,45 +13,48 @@ Welcome to this blog series on my Google Summer of Code 2025 Project: **swhkd: P
 Libinput as an Alternative Input Backend**.
 | Period | From | To |
 |--------|------|----|
-| Community Bonding Period  | May 8 | May 31 |
-| Implementation till Midterm Review | June 1 | July 14 |
-| Implementation till Final Review | July 15 | September 1 |
+| Community Bonding  | May 8 | May 31 |
+| Implementation - Midterm | June 1 | July 14 |
+| Implementation - Final | July 15 | September 1 |
 
-The project will officially begin on June 1st and will end on September 1st. The midterm
-evaluation is scheduled to be on July 15th, and the final evaluation is scheduled for
-September 1st.  
 For a more detailed timeline and overview of the project, check out the
 proposal [here](https://docs.google.com/document/d/1v5R0VWxwPxz11hho753VfebKN5VCLLPzO0TisAqDy-I/edit?usp=sharing).
 
 ## What is swhkd?
-Short for Simple Wayland HotKey Daemon. We'll borrow the answer from the [website](https://git.sr.ht/~shinyzenith/swhkd#swhkd)
+Short for Simple Wayland HotKey Daemon. I'll borrow the answer from the [website](https://git.sr.ht/~shinyzenith/swhkd#swhkd)
 
-> swhkd is a display protocol-independent hotkey daemon made in Rust. swhkd uses an easy-to-use configuration system inspired by sxhkd, so you can easily add or remove hotkeys.
-> It also attempts to be a drop-in replacement for sxhkd, meaning your sxhkd config file is also compatible with swhkd.
-> Because swhkd can be used anywhere, the same swhkd config can be used across Xorg or Wayland desktops, and you can even use swhkd in a TTY.
+> swhkd is a display protocol-independent hotkey daemon made in Rust. swhkd uses an easy-to-use configuration
+> system inspired by sxhkd, so you can easily add or remove hotkeys.  
+> It also attempts to be a drop-in replacement for sxhkd, meaning your sxhkd config file is also compatible with
+> swhkd. Because swhkd can be used anywhere, the same swhkd config can be used across Xorg or Wayland desktops,
+> and you can even use swhkd in a TTY.
 
 ## What is libinput?
-> libinput is a library that provides a full input stack for display servers and other applications that need to handle input devices provided by the kernel.
-> libinput provides device detection, event handling and abstraction so minimize the amount of custom input code the user of libinput need to provide the common set of functionality that users expect. Input event processing includes scaling touch coordinates, generating relative pointer events from touchpads, pointer acceleration, etc.
+> libinput is a library that provides a full input stack for display servers and other applications that need
+> to handle input devices provided by the kernel.  
+> libinput provides device detection, event handling and abstraction to minimize the amount of custom input
+> code the user of libinput need to provide the common set of functionality that users expect. Input event
+> processing includes scaling touch coordinates, generating relative pointer events from touchpads, pointer acceleration, etc.
 
 # Goals
-The goal of this project is to provide an option for the user to use libinput as the input backend,
-as an alternative to the default _evdev_ input backend. The motivation for this is explained in the
-proposal. In the first phase of this project, or goals are:
+The goal of this project is to provide support for the user to use `libinput` as the input backend,
+as an alternative to the default `evdev` input backend. The motivation for this is outlined in the
+proposal. In the first phase of this project, our goals are:
 
 ### Read device events using libinput
-We will start from scratch and try to replicate some existing functionality of swhkd using
-the libinput backend. At this stage, we will not plan changes in any of the existing modules
-in swhkd (config, perms, tests, uinput) but rather work out the specifics of the library
-and implement the major functionality of swhkd:
+We'll start from scratch and try to replicate some existing functionality of swhkd using
+the libinput backend. At this stage, we do not plan to modify any of the existing modules
+in swhkd (config, perms, tests, uinput). Instead, we'll focus on understanding how the
+library works and implementing the core functionality of swhkd:
 1. Adding devices by name.
-2. Grab the devices and read their inputs.
+2. Grabbing devices and reading their inputs.
 
 ### Read events asynchronously
 The current implementation uses an asynchronous API to reduce CPU usage, we use the
-[_AsyncFd_](https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html) struct in 
-_tokio_, which provides a wrapper around the libinput Rust interface to let us perform
-asynchronous reads and writes.
+`AsyncFd`[^1] struct from `tokio`, which provides a wrapper around file descriptors to
+facilitate asynchronous reads and writes.
+
+[^1]: AsyncFD: https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html
 
 # Implementation
 
@@ -100,24 +104,24 @@ fn main() {
 ```
 </details>
 
-We first define a struct _Interface_ which implements the trait _LibinputInterface_ 
-(required by libinput) for opening/closing device files with proper permissions.  
-We use this newly created struct while initializing libinput with udev. The udev backend
+We first define a struct named `Interface` which implements the `LibinputInterface` trait 
+(required by libinput) to handle opening/closing device files with the appropriate permissions.  
+This custom interface is used to initialize libinput with the udev backend. The udev backend
 auto-detects input devices tied to "seat0" (the default user session seat on Linux).
 The event loop then continuously listens for input events and prints them.
 
-To make a hotkey daemon from this, there are a lot of decisions to be made, let's go through
-some of them.
+Let's gradually transform this boilerplate to a hotkey daemon. This will involve several
+experiments and design decisions. Let's walk through some of them.
 
 ## Libinput Context
-In the above example we use libinput with udev, which adds/removes devices automatically when
-the binary is run, or when the device is connected/disconnected. This is handled bu udev internally.
+In the above example we use libinput with udev, which automatically adds and removes devices when
+the binary is run, or when a device is connected or disconnected. This is handled internally by udev.
 ```rust
 let mut input = Libinput::new_with_udev(Interface);
 input.udev_assign_seat("seat0").unwrap();
 ```
-We could instead create a libinput context which requires the caller to manually add or remove devices
-by providing their path.
+We could instead create a libinput context that requires the caller to manually add or remove devices
+by specifiying their paths.
 ```rust
 let mut input = Libinput::new_from_path(Interface);
 let dev = input.path_add_device("/dev/input/event20").unwrap();
@@ -125,17 +129,17 @@ let dev = input.path_add_device("/dev/input/event20").unwrap();
 input.path_remove_device(device);
 ```
 
-The latter fits in better with the structure of the current _swhkd_ and would allow us to integrate
-it better in the future, but that involves writing a bunch of extra code with the _udev_ library to 
-manually do what libinput is already doing internally. So let's leave that problem to 
-_post midterm-review_ me. :)
+This approach aligns more closely with the structure of the current _swhkd_ and would likely make
+future integration smoother, but that involves writing a bunch of additional code using the `udev`
+library to manually replicate what libinput already does for us.  
+So let's leave that problem to _post midterm-review_ me. :)
 
 ## _Grab_ that device!
 While writing a hotkey daemon, we want to grab _all_ events coming from a device for ourselves,
 and check whether the sequence of keys entered constitutes a hotkey. If it does, we execute the
 associated operation. If it doesn't we allow the events to pass through to be handled by the window
 manager/application.  
-Linux lets us do this using the _ioctl_ operation _EVIOCGRAB_, which is defined for _evdev_ devices.
+Linux lets us do this using the `ioctl` operation `EVIOCGRAB`, which is defined for `evdev` devices.
 This lets the caller read events exclusively from this device. So we set the bit while opening
 the device, and unset it while closing it.
 
@@ -179,14 +183,14 @@ impl LibinputInterface for Interface {
 ## Do NOT grab that device!
 But wait! If we grab all input devices for ourselves and then just print the events out, how
 do we then use our machine? *Spoiler:* we can't. In the initial phases of implementation, there
-were many instances where I had to restart the machine because I couldn't _Ctrl+C_ the executable.
-This would've been fine if we had implemented event passthrough; but as that's a task for future me,
+were many instances where I had to restart the machine because I couldn't `Ctrl+C` the executable.
+This would've been fine if we had implemented event passthrough; but as that's a task for _future me_,
 let's find a way to get around this for the time being.  
 Swhkd takes a devices argument from the user; we implement this _temporarily_ by reading the device
-names from devices.txt, which contains a list of newline separated device names.  
+names from `devices.txt`, which contains a list of newline separated device names.  
 How do we find the device name from the path? A rather simple way is to:
-1. Take the path of the device, e.g: _/dev/input/event20_.
-2. Read the contents of the corresponding path: _/sys/class/input/event20/device/name_
+1. Take the path of the device, e.g: `/dev/input/event20`.
+2. Read the contents of the file at the equivalent path: `/sys/class/input/event20/device/name`
 <details>
 <summary>Click to enlarge snippet</summary>
 ```rust
@@ -237,19 +241,22 @@ daemon that should be running in the background. Ideally, we would sit in idle a
 is queued up, only then would be process the event, running for a few milliseconds per event.  
 To achieve this, we open the files in non-blocking mode. This is done by setting the `O_NONBLOCK`
 flag during the `open()` syscall. In this mode, if we attempt to read from a file and it's not ready,
-instead of blocking until data becomes available, the call return immediately with a `EWOULDBLOCK`.
+instead of blocking until data becomes available, the call return immediately with a `EWOULDBLOCK`
 error.  
-This feature of the kernel is very handy, for the uninitiated, check out these
-[wonderful notes](https://notes.shichao.io/unp/ch6/) to learn more about how this is used in practice.  
+This feature of the kernel is very handy, for the uninitiated, check out the man pages for `select`,
+`poll` and `epoll`. There are also several blogs and resources[^2] on the internet to learn more
+about how this is used in practice.  
+
+[^2]: Chapter 6. I/O Multiplexing: The select and poll Functions: https://notes.shichao.io/unp/ch6/
 
 Libinput opens devices in non-blocking mode by default, allowing us to take advantage of it. We 
-pair it with Tokio's [_AsyncFd_](https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFd.html), 
+pair it with Tokio's AsyncFd[^1], 
 which is easy since the Libinput struct already implements the trait that `AsyncFD` requires 
 (`std::os::fd::AsRawFd`).
 
 > AsyncFD associates an IO object backed by a Unix file descriptor with the tokio reactor, allowing 
 > for readiness to be polled. The file descriptor must be of a type that can be used with the OS 
-> polling facilities (ie, poll, epoll, kqueue, etc), such as a network socket or pipe, and the
+> polling facilities (ie, poll, epoll, kqueue, etc), ... and the
 > file descriptor must have the nonblocking mode set to true.
 
 <details>
@@ -316,5 +323,6 @@ match guard.try_io(|inner| {
 
 guard.clear_ready();
 ```
-Go check out the repo to see how everything comes together: [link](https://github.com/aadilshabier/swhkd/tree/8ff5cb6e871f511e3db5f5d03e2a719815be8348).  
-I hope everyone who managed to make it till here learned something new. :)
+Feel free to check out the Github repository to see how everything came together:
+[swhkd:libinput-backend](https://github.com/aadilshabier/swhkd/tree/8ff5cb6e871f511e3db5f5d03e2a719815be8348).  
+I hope everyone who managed to make it this far learned something new.
