@@ -24,6 +24,11 @@ const siteMetadata = {
   locale: 'en-US',
   // set to true if you want a navbar fixed to the top
   stickyNav: false,
+  analytics: {
+    umamiAnalytics: {
+      umamiWebsiteId: process.env.NEXT_UMAMI_ID, // e.g. 123e4567-e89b-12d3-a456-426614174000
+    },
+  },
   search: {
     provider: 'kbar', // kbar or algolia
     kbarConfig: {
