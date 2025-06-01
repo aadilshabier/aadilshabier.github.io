@@ -238,10 +238,14 @@ fn main() -> std::io::Result<()> {
 
 ## To poll, or not to poll
 Our current, rather simple implementation uses a loop to keep polling libinput and log events.
-It runs as fast as the CPU allows; pulling up `htop` will show that it takes over a CPU
-core and stays at a 100% usage, especially when the machine is idle. This is not ideal for a hotkey
-daemon that should be running in the background. Ideally, we would sit in idle and wait till an event
-is queued up, only then would be process the event, running for a few milliseconds per event.  
+It runs as fast as the CPU allows; pulling up `htop` shows that it takes over a CPU
+core and stays at a 100% usage. 
+
+![htop before](/static/images/gsoc-1-htop-before.png)
+
+This is not ideal for a hotkey daemon that should be running in the background. Ideally, we would
+sit in idle and wait till an event is queued up, only then would be process the event, running
+for a few milliseconds per event.  
 To achieve this, we open the files in non-blocking mode. This is done by setting the `O_NONBLOCK`
 flag during the `open()` syscall. In this mode, if we attempt to read from a file and it's not ready,
 instead of blocking until data becomes available, the call return immediately with a `EWOULDBLOCK`
@@ -326,6 +330,56 @@ match guard.try_io(|inner| {
 
 guard.clear_ready();
 ```
+
+This is how the CPU performance looks like with the changes we made.
+![htop after](/static/images/gsoc-1-htop-after.png)
+
+# Results
+Here's what the end product looks like. We filter through devices, and add only the ones
+which are in our set, the keyboard inputs are from pressing the `ASDFGH` keys.
+
+```
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Devices: {"Sino Wealth USB Keyboard Consumer Control", "Sino Wealth USB Keyboard"}
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event3, Power Button
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event16, Video Bus
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event5, Acer Wireless Radio Control
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event17, Video Bus
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event0, Power Button
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event2, Lid Switch
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event1, Sleep Button
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event4, Logitech B330/M330/M331
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Opening: /dev/input/event6, Sino Wealth USB Keyboard
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event8, Sino Wealth USB Keyboard System Control
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Opening: /dev/input/event9, Sino Wealth USB Keyboard Consumer Control
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Opening: /dev/input/event10, Sino Wealth USB Keyboard
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event11, Sino Wealth USB Keyboard Mouse
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event13, ELAN050A:00 04F3:3158 Mouse
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event14, ELAN050A:00 04F3:3158 Touchpad
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event18, HDA Intel PCH Front Headphone
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event19, HDA Intel PCH HDMI/DP,pcm=3
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event20, HDA Intel PCH HDMI/DP,pcm=7
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event21, HDA Intel PCH HDMI/DP,pcm=8
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event22, HDA Intel PCH HDMI/DP,pcm=9
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event7, AT Translated Set 2 keyboard
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event12, PC Speaker
+[2025-06-01T11:04:50Z DEBUG swhkd_libinput] Skipping: /dev/input/event15, Acer WMI hotkeys
+[2025-06-01T11:04:52Z INFO  swhkd_libinput] Event: Device(Added(DeviceAddedEvent @0x5db7df55a900))
+[2025-06-01T11:04:52Z INFO  swhkd_libinput] Event: Device(Added(DeviceAddedEvent @0x5db7df569890))
+[2025-06-01T11:04:52Z INFO  swhkd_libinput] Event: Device(Added(DeviceAddedEvent @0x5db7df577970))
+[2025-06-01T11:04:52Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 30, state: Pressed
+[2025-06-01T11:04:52Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 30, state: Released
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 31, state: Pressed
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 31, state: Released
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 32, state: Pressed
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 32, state: Released
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 33, state: Pressed
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 33, state: Released
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 34, state: Pressed
+[2025-06-01T11:04:53Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 34, state: Released
+[2025-06-01T11:04:54Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 35, state: Pressed
+[2025-06-01T11:04:54Z INFO  swhkd_libinput] Device: Sino Wealth USB Keyboard, ev: event6, key pressed: 35, state: Released
+```
+
 Feel free to check out the Github repository to see how everything came together:
 [swhkd:libinput-backend](https://github.com/aadilshabier/swhkd/tree/8ff5cb6e871f511e3db5f5d03e2a719815be8348).  
 I hope everyone who managed to make it this far learned something new.
