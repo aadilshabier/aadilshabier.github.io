@@ -217,3 +217,35 @@ works well with all sorts of input workloads, so I stuck with this.
 # Results
 Feel free to check out the Github repository:
 [swhkd:libinput-uinput](https://github.com/aadilshabier/swhkd/tree/libinput-backend).
+
+## Instructions to Build and Run
+
+1. Clone the repo from the link above.
+2. Go to `swhkd/swhkd/Cargo.toml`
+3. Uncomment the libinput_backend [features] section so that it looks like this:
+```toml
+# default = ["evdev_backend", "no_rfkill"]
+default = ["libinput_backend", "no_rfkill"]
+```
+4. Create a minimal config file called `config` with these contents:
+```
+# config
+super + ReTuRn # case insensitive
+	alacritty
+```
+
+5. Go to the project directory and build the project.
+```sh
+$ cargo b
+```
+
+6. Run `swhks`.
+```sh
+./target/debug/swhks
+```
+
+7. Run `swhkd` with sudo, and provide the created config file. Set the optional RUST_LOG
+environment variable to see more logs.
+```sh
+sudo RUST_LOG=info ./target/debug/swhkd -c config
+```
