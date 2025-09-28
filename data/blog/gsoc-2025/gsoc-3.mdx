@@ -1,0 +1,219 @@
+---
+title: Google Summer of Code Blog 3
+date: '2025-09-27'
+tags: ['gsoc', 'rust', 'waycrate']
+draft: false
+summary: 'The third blog of my GSoC 2025 journey with Waycrate'
+---
+
+# Introduction
+
+Welcome to the third(and potentially the final) blog of my GSoC 2025 journey. At the moment of
+writing this blog, I've just put in some finishing touches to the implementation. It has been
+a while since the last blog, and a lot of changes have made since then, which we'll go through
+in this blog.
+Be sure to checkout the first and second part of this series if you haven't already!
+
+# Goals
+
+The main goal after my mid-term evaluation were to make it a drop in replacemnt for the current
+implementation. This was a long process which included a lot of hacking around and thinking about
+the best possible design to keep everything working as expected, and to have just the right amount
+of abstractness to still keep it clean, readable and performant. 
+
+# Implementation
+
+## Switching Between Backends
+The first order of business was to be able to choose between the backends easily. There were a
+couple of different ways to go about this:
+1. Compile a single binary which contains support for backends and will let the user choose the
+ backend with a command line flag or a config file.
+2. Use a compile time flag to choose and compile the excecutable with the required backend.
+
+Afer deliberation with the project mentors, I decided to go with **2**.
+
+## Structure of the Input Backend
+Thsi required a lot of combing through `swhkd/daemon.rs`, and making a note of what things are
+different between the two implementations. After a lot of trial and error, I came up with this:
+
+```rust
+pub trait Backend {
+    fn get_initial_devices(
+        &mut self,
+        arg_devices: &[String],
+    ) -> Result<Vec<String>, Box<dyn Error>>;
+    fn add_device(&mut self, device: &str) -> bool;
+    fn remove_device(&mut self, device: &str) -> bool;
+    fn create_uinput_devices(&mut self) -> Result<(), Box<dyn Error>>;
+    async fn next_event(&mut self) -> Option<(String, InputEvent)>;
+    fn emit_event(&mut self, event: &InputEvent) -> Result<(), io::Error>;
+    fn emit_switch_event(&mut self, event: &InputEvent) -> Result<(), io::Error>;
+}
+```
+
+Both of the backends would have to implement this trait, and they are used as follows:
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+#[cfg(all(feature = "evdev_backend", feature = "libinput_backend"))]
+compile_error!("Only one input backend can be enabled at a time");
+
+#[cfg(not(any(feature = "evdev_backend", feature = "libinput_backend")))]
+compile_error!(
+    "You must enable exactly one input backend feature(evdev_backend or libinput_backend)"
+);
+
+#[cfg(feature = "evdev_backend")]
+mod evdev_backend;
+#[cfg(feature = "evdev_backend")]
+use evdev_backend::EvdevBackend as InpBackend;
+
+#[cfg(feature = "libinput_backend")]
+mod libinput_backend;
+#[cfg(feature = "libinput_backend")]
+use libinput_backend::LibinputBackend as InpBackend;
+
+#[tokio::main]
+pub async fn main() -> Result<(), Box<dyn Error>> {
+    let mut backend = InpBackend::new()?;
+    // ...
+}
+```
+</details>
+
+## Adding/removing devices
+We followed the same rules for adding and removing devices as the `evdev` implementation. In Blog 1,
+we briefly touched upon the libinput context initialization methods, one of which required us to
+add devices manually. We now use that instead of the builtin `udev` context provided by the
+`libinput` library.
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+    fn add_device(&mut self, path: &str) -> bool {
+        if self.devices.contains_key(path) {
+            log::error!("Device '{}' was already added!", path);
+            return false;
+        } else if !self.arg_devices.is_empty() && !self.arg_devices.contains(&path.to_owned()) {
+            return false;
+        }
+        if let Some(dev) = self.input.get_mut().path_add_device(path) {
+            log::info!("Device added: '{}'", path);
+            self.devices.insert(path.to_string(), dev);
+            true
+        } else {
+            log::error!("Could not add device: '{}'.", path);
+            false
+        }
+    }
+```
+</details>
+
+## evdev::uinput everything
+In Blog 2, we use the `uinput` wrapper for emitting events, but a look look inside the library
+revealed a few pitfalls. There were some types of events it wouldn't support. Since `evdev` was
+already a required dependency, I decided to use `evdev::uinput` and drop the unnecessary dependency.
+`evdev::uinput::VirtualDevice::emit` takes `evdev::InputEvent` as input for replaying the event, so
+we write a helper function to convert libinput events to evdev events. A single libinput event can
+be seperated into multiple evdev events. For example, a libinput mouse pointer event contains both
+a dx and a dy component, but evdev sends these components as seperate events.  
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+impl TryFrom<LibinputEvent> for SmallVec<[evdev::InputEvent; 2]> {
+    type Error = ();
+    fn try_from(value: LibinputEvent) -> Result<Self, Self::Error> {
+        // ...
+    }
+}
+
+pub struct LibinputBackend {
+    // ...
+    uinput_device: Option<VirtualDevice>,
+    uinput_switches_device: Option<VirtualDevice>,
+}
+
+```
+</details>
+
+## Async Challenges
+
+I faced a lot of challenges while adding the asynchronous component of the libinpu backend. I
+thought I had figured most of it out in thee previous blog, but there was still much to learn.
+
+The asynchronous function would be used inside a `tokio::select!` arm, and initially it was
+implemented like this:
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+async fn next_event(&mut self) -> Option<(String, InputEvent)> {
+    // clear all pending events from the queues.
+    while let Some(event) = self.input_queue.pop_front() {
+        // ...
+        return Some((device, event));
+    }
+
+    let mut guard = self.input.readable_mut().await.ok()?;
+    match guard.try_io(|inner| {
+        let input = inner.get_mut();
+        input.dispatch()?;
+        self.input_queue.extend(input.into_iter());
+        Ok(())
+    }) {
+        Ok(x) => {
+            x.ok()?;
+        }
+        Err(_would_block) => {}
+    };
+    guard.clear_ready();
+    None
+}
+```
+</details>
+
+This implementation had one glaring mistake I didn't realize until much later. I kept skipping
+events, and at the time, I had no idea why.
+If there were no events in the queue, the function would just return None, and it wouldn't run
+again till the `select!` loop restarted. This may never happen for a long time.
+
+I tried debugging this for many hours, and tried to ask ChatGPT what the issue was, it suggested
+I implement `futures_core::stream::Stream`, which I almost did, till I found this (albeit hack-ey)
+simpler way to do this. :)
+
+<details>
+<summary>Click to enlarge snippet</summary>
+```rust
+async fn next_event(&mut self) -> Option<(String, InputEvent)> {
+    loop {
+        // clear all pending events from the queues.
+        while let Some(event) = self.input_queue.pop_front() {
+            // ...
+            return Some((device, event));
+        }
+
+        let mut guard = self.input.readable_mut().await.ok()?;
+        match guard.try_io(|inner| {
+            let input = inner.get_mut();
+            input.dispatch()?;
+            self.input_queue.extend(input.into_iter());
+            Ok(())
+        }) {
+            Ok(x) => {
+                x.ok()?;
+            }
+            Err(_would_block) => {}
+        };
+        guard.clear_ready();
+    }
+}
+```
+</details>
+Maybe implementing `Stream` would've been the Rusty way to do this, I tested out this, and it
+works well with all sorts of input workloads, so I stuck with this. 
+
+# Results
+Feel free to check out the Github repository:
+[swhkd:libinput-uinput](https://github.com/aadilshabier/swhkd/tree/libinput-backend).
